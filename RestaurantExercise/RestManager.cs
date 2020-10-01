@@ -11,8 +11,6 @@ namespace RestaurantExercise
 {
     public class RestManager
     {
-        // критерий максимального ожидания
-        private const int MAX_QUEUE_COUNT = 5;
 
         private readonly List<ClientsGroup> _clientQueue;
         private readonly List<Table> _tables;
@@ -31,29 +29,23 @@ namespace RestaurantExercise
         // new client(s) show up
         public void OnArrive(ClientsGroup group)
         {
-            // если есть свободные столики определяем сразу туда, если нет пытаемся подсадить
-            Table freeTable = _tables.FirstOrDefault(t => t.IsFree && t.Size >= group.Size) ?? _tables.FirstOrDefault(t => t.FreeSize >= group.Size);
-            if (freeTable == null)
+            // Получаем столики по размеру равным или больше чем количество людей
+            List<Table> freeTables = _tables.Where(t => t.FreeSize >= group.Size).ToList();
+            if (!freeTables.Any())
             {
-                // столиков нет, значит добавляем в очередь
                 _clientQueue.Add(group);
                 return;
             }
-
-            // устанавливаем id столика для клиента
-            group.TableId = freeTable.Id;
-
-            // уменьшаем кол-во свободных мест за столиком
-            freeTable.FreeSize -= group.Size;
-
-            // усаживаем за столик
-            if (TableClients.ContainsKey(freeTable.Id))
+            // Сортируем по размеру пустых столиков. Это нужно для того чтобы получить столик который меньше размером. Например чтобы не посадить 2 людей на столик 6-х
+            freeTables = freeTables.OrderBy(t => t.FreeSize).ToList();
+            // Получаем столик который свободен или в который уже сидят люди но есть свободные места
+            Table freeTable = freeTables.FirstOrDefault(t => t.IsFree) 
+                              ?? freeTables.FirstOrDefault(t => !t.IsFree);
+            PutTheTable(freeTable, group);
+            // Если есть клиенты в очереди, проверяем их состояние
+            if (_clientQueue.Count > 0)
             {
-                TableClients[freeTable.Id].Add(group);
-            }
-            else
-            {
-                TableClients.Add(freeTable.Id, new List<ClientsGroup> {group});
+                ClientStatusInTheQueue(new List<ClientsGroup>());   
             }
         }
 
@@ -72,57 +64,27 @@ namespace RestaurantExercise
                 table.FreeSize += group.Size;
 
                 // ищем подходящего клиента из очереди
-                ClientsGroup fromQueueClient = _clientQueue.FirstOrDefault(client => _tables.Any(t => t.FreeSize >= client.Size));
-
+                ClientsGroup fromQueueClient = _clientQueue.FirstOrDefault(client => table.FreeSize >= client.Size);
+                
                 if (fromQueueClient == null)
                 {
                     return;
                 }
+                
+                // получаем групп стоящих перед fromQueueClient
+                List<ClientsGroup> clientsGroupAheadOfQueue = _clientQueue.Where(clientsGroup =>
+                    _clientQueue.IndexOf(clientsGroup) < _clientQueue.IndexOf(fromQueueClient)).ToList();
 
-                // есть такой, пытаемся усаживать за столик
-                Table freeTable = _tables.FirstOrDefault(t => t.IsFree && t.Size >= fromQueueClient.Size) ?? _tables.FirstOrDefault(t => t.FreeSize >= fromQueueClient.Size);
-                if (freeTable != null)
+                
+                PutTheTable(table, fromQueueClient);
+                
+                if (clientsGroupAheadOfQueue.Count != 0)
                 {
-                    // предыдущим клиентам из очереди повышаем уровень ожидания, здесь вопрос - повышать всем впереди стоящим или только первому из очереди? сейчас повышаем всем впереди стоящим
-                    foreach (ClientsGroup clientsGroup in _clientQueue.Where(clientsGroup => _clientQueue.IndexOf(clientsGroup) < _clientQueue.IndexOf(fromQueueClient)))
-                    {
-                        clientsGroup.WaitCount++;
-                    }
-
-                    // устанавливаем id столика для клиента
-                    fromQueueClient.TableId = freeTable.Id;
-
-                    // уменьшаем кол-во свободных мест за столиком
-                    freeTable.FreeSize -= fromQueueClient.Size;
-
-                    // усаживаем за столик
-                    if (TableClients.ContainsKey(freeTable.Id))
-                    {
-                        TableClients[freeTable.Id].Add(fromQueueClient);
-                    }
-                    else
-                    {
-                        TableClients.Add(freeTable.Id, new List<ClientsGroup> {fromQueueClient});
-                    }
-
-                    // удаляем из очереди
-                    _clientQueue.RemoveAll(client => client.Id == fromQueueClient.Id);
-
-                    // сообщаем системе что скоро клиент устанет ждать и покинет нашу очередь, если до порога ожидания остлось 1
-                    foreach (ClientsGroup clientsGroup in _clientQueue.Where(client => client.WaitCount == MAX_QUEUE_COUNT - 1))
-                    {
-                        Console.WriteLine($"Client with Id = '{clientsGroup.Id}' will soon leave queue!");
-                    }
-
-                    // сообщаем системе что клиент устал ждать и покидает нашу очередь
-                    foreach (ClientsGroup clientsGroup in _clientQueue.Where(client => client.WaitCount == MAX_QUEUE_COUNT))
-                    {
-                        Console.WriteLine($"Client with Id = '{clientsGroup.Id}' leave queue!");
-                    }
-
-                    // удаляем уставших ждать
-                    _clientQueue.RemoveAll(client => client.WaitCount == MAX_QUEUE_COUNT);
+                    ClientStatusInTheQueue(clientsGroupAheadOfQueue);
                 }
+
+                // удаляем из очереди
+                _clientQueue.RemoveAll(client => client.Id == fromQueueClient.Id);
             }
         }
 
@@ -131,6 +93,42 @@ namespace RestaurantExercise
         public Table Lookup(ClientsGroup group)
         {
             return _tables.FirstOrDefault(table => table.Id == group.TableId);
+        }
+        
+        public void PutTheTable(Table table, ClientsGroup group)
+        {
+            // устанавливаем id столика для клиента
+            group.TableId = table.Id;
+
+            // уменьшаем кол-во свободных мест за столиком
+            table.FreeSize -= group.Size;
+
+            // усаживаем за столик
+            if (TableClients.ContainsKey(table.Id))
+            {
+                TableClients[table.Id].Add(group);
+            }
+            else
+            {
+                TableClients.Add(table.Id, new List<ClientsGroup> {group});
+            }
+        }
+
+        public void ClientStatusInTheQueue(List<ClientsGroup> clientsGroupAheadOfQueue)
+        {
+            Random random = new Random();
+            if (!clientsGroupAheadOfQueue.Any())
+            {
+                clientsGroupAheadOfQueue = new List<ClientsGroup>(_clientQueue);
+            }
+            foreach (var clientsGroup in clientsGroupAheadOfQueue)
+            {
+                if (random.Next(1, 11) <= 4)
+                {
+                    Console.WriteLine($"Client with Id = '{clientsGroup.Id}' leave queue!");
+                    _clientQueue.Remove(clientsGroup);
+                }
+            }
         }
     }
 }
